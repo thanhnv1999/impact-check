@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(if \\(-not $?\\) { \"Directory empty or new\" })",
+      "Bash(Get-ChildItem -Path \"d:\\\\tool\")",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(Get-ChildItem -Path \"d:\\\\tool\" -Recurse -Force)",
+      "Bash(Select-Object FullName)"
+    ],
+    "deny": [
+      "read:.env",
+      "read:.env.*"
+    ]
+  }
+}
