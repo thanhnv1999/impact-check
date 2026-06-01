@@ -2,6 +2,15 @@ import os
 import re
 from pathlib import Path
 
+from .config import (
+    MAX_FILES_TO_SCAN,
+    MAX_FILE_SIZE,
+    MAX_RELATED_FILES,
+    MAX_RELATED_CONTENT,
+    MAX_TEST_FILES,
+    MAX_TEST_CONTENT,
+)
+
 IMPORT_PATTERNS = {
     ".py": [
         r"^\s*import\s+([\w.]+)",
@@ -59,12 +68,6 @@ SKIP_DIRS = {
 TEST_DIRS = {"tests", "test", "__tests__", "spec", "specs"}
 TEST_NAME_PATTERNS = ["test_", "_test", ".spec.", ".test.", "_spec"]
 
-MAX_FILES_TO_SCAN = 1000
-MAX_FILE_SIZE = 200 * 1024
-MAX_RELATED_FILES = 12
-MAX_RELATED_CONTENT = 25000
-MAX_TEST_FILES = 5
-MAX_TEST_CONTENT = 25000
 
 # Layer 2: symbol grep — extract exported names per language
 EXPORT_PATTERNS = {
@@ -97,6 +100,26 @@ SAME_LANG_EXTS = {
 MIN_SYMBOL_LEN = 4
 
 _graph_cache: dict = {}
+_scan_cap_hit: dict = {}             # {abs_root: True} khi vượt MAX_FILES_TO_SCAN
+_content_truncation_warnings: dict = {}  # {abs_root: [str]} danh sách file bị cắt content
+
+
+def get_scan_warnings(project_root: str) -> list[str]:
+    """Trả về cảnh báo bị cắt khi scan (file cap, content truncation)."""
+    warnings = []
+    root = os.path.abspath(project_root)
+    if root in _scan_cap_hit:
+        skip_hint = ", ".join(sorted(SKIP_DIRS - {".git"}))
+        warnings.append(
+            f"Repo có >{MAX_FILES_TO_SCAN} file — chỉ scan {MAX_FILES_TO_SCAN} file đầu tiên, "
+            f"kết quả có thể thiếu dependency. "
+            f"Các thư mục đã bỏ qua tự động: {skip_hint}. "
+            f"Nếu còn thư mục lớn khác (VD: vendor/, coverage/, .cache/) "
+            f"hãy chạy từ thư mục con cụ thể: impact-check --root src/"
+        )
+    for msg in _content_truncation_warnings.get(root, []):
+        warnings.append(f"Nội dung bị cắt: {msg}")
+    return warnings
 
 
 def _get_graph(project_root: str) -> dict:
@@ -138,6 +161,7 @@ def find_related_files(
             graph = {**graph, **extra}
 
     result = {p: [] for p in changed_paths}
+    content_truncated: list[str] = []
 
     for orig_path in changed_paths:
         abs_p = os.path.abspath(orig_path)
@@ -166,10 +190,14 @@ def find_related_files(
         for rel in sorted(direct)[:MAX_RELATED_FILES]:
             seen.add(rel)
             content = graph.get(rel, {}).get("content", "")
+            truncated = len(content) > MAX_RELATED_CONTENT
+            if truncated:
+                content_truncated.append(f"{rel} ({len(content):,} chars → cắt còn {MAX_RELATED_CONTENT:,})")
             result[orig_path].append({
                 "path": rel,
                 "content": content[:MAX_RELATED_CONTENT],
                 "transitive": False,
+                "content_truncated": truncated,
             })
 
         remaining = max(0, MAX_RELATED_FILES - len(seen))
@@ -177,11 +205,19 @@ def find_related_files(
             if rel not in seen:
                 seen.add(rel)
                 content = graph.get(rel, {}).get("content", "")
+                truncated = len(content) > MAX_RELATED_CONTENT
+                if truncated:
+                    content_truncated.append(f"{rel} ({len(content):,} chars → cắt còn {MAX_RELATED_CONTENT:,})")
                 result[orig_path].append({
                     "path": rel,
                     "content": content[:MAX_RELATED_CONTENT],
                     "transitive": True,
+                    "content_truncated": truncated,
                 })
+
+    if content_truncated:
+        root_key = os.path.abspath(project_root)
+        _content_truncation_warnings.setdefault(root_key, []).extend(content_truncated)
 
     return result
 
@@ -210,9 +246,14 @@ def find_test_files(changed_paths: list, project_root: str = ".") -> list:
         stem_clean = re.sub(r"^test[_.]|[_.]test$|[_.]spec$|tests?$|spec$", "", stem, flags=re.IGNORECASE).strip(".")
 
         if any(cs in stem_clean or stem_clean in cs for cs in changed_stems):
+            raw = data.get("content", "")
+            if len(raw) > MAX_TEST_CONTENT:
+                _content_truncation_warnings.setdefault(project_root, []).append(
+                    f"{rel} [test] ({len(raw):,} chars → cắt còn {MAX_TEST_CONTENT:,})"
+                )
             found.append({
                 "path": rel.replace("\\", "/"),
-                "content": data.get("content", "")[:MAX_TEST_CONTENT],
+                "content": raw[:MAX_TEST_CONTENT],
             })
 
         if len(found) >= MAX_TEST_FILES:
@@ -486,6 +527,7 @@ def _collect_files(root: str) -> list:
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for fname in filenames:
             if len(result) >= MAX_FILES_TO_SCAN:
+                _scan_cap_hit[os.path.abspath(root)] = True
                 return result
             full = os.path.join(dirpath, fname)
             try:

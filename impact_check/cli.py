@@ -112,11 +112,16 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, 
 
     reporter.print_scan_summary(related)
     reporter.print_diff_warnings(changes)
+    for w in context_finder.get_scan_warnings(root):
+        reporter.print_warning(w)
 
     # Trim context theo giới hạn provider — cảnh báo trước khi gọi AI
-    related, trim_warnings = analyzer.trim_to_provider_limits(related, provider)
+    related, trim_warnings, safe_exceeded = analyzer.trim_to_provider_limits(related, provider)
     for w in trim_warnings:
         reporter.print_info(f"⚠ {w}")
+
+    if safe_exceeded and not dry_run:
+        related = _prompt_safe_chars(related, provider)
 
     # Log dữ liệu tìm được
     debug.init()
@@ -135,7 +140,7 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, 
     analysis = None
     with reporter.step(f"Analyzing impact with {provider.upper()} AI"):
         try:
-            analysis = analyzer.analyze(changes, related, structure, ai_provider, test_files)
+            analysis = analyzer.analyze(changes, related, structure, ai_provider, test_files, provider)
         except Exception as exc:
             reporter.print_error(f"AI analysis failed: {exc}")
             sys.exit(1)
@@ -198,6 +203,36 @@ def _log_scan_results(changes, related: dict, test_files: list) -> None:
         debug.section("Test files tìm được", "\n".join(lines))
     else:
         debug.section("Test files tìm được", "  Không tìm thấy file test nào.")
+
+
+def _prompt_safe_chars(related: dict, provider: str) -> dict:
+    """Hỏi user khi context vượt safe_chars: Trim / Gửi hết / Hủy."""
+    from .config import PROVIDER_LIMITS, DEFAULT_PROVIDER_LIMITS
+    limits = PROVIDER_LIMITS.get(provider.lower(), DEFAULT_PROVIDER_LIMITS)
+    total  = sum(len(r.get("content", "")) for refs in related.values() for r in refs)
+    safe   = limits["safe_chars"]
+    reporter.print_warning(
+        f"Context ~{total:,} chars vượt ngưỡng an toàn {safe:,} chars "
+        f"({provider.upper()}) — có thể timeout hoặc kết quả kém chính xác."
+    )
+    choice = click.prompt(
+        "  [T] Trim tự động xuống ngưỡng an toàn  "
+        "[G] Gửi hết  "
+        "[N] Hủy",
+        default="T",
+    ).strip().upper()
+
+    if choice == "N":
+        reporter.print_info("Đã hủy.")
+        sys.exit(0)
+    if choice == "T":
+        related = analyzer.trim_to_safe_chars(related, provider)
+        new_total = sum(len(r.get("content", "")) for refs in related.values() for r in refs)
+        reporter.print_info(
+            f"Đã trim: {total // 4:,} → {new_total // 4:,} token "
+            f"(giữ lại {new_total * 100 // total}% nội dung mỗi file)."
+        )
+    return related
 
 
 def _print_setup_hint(provider: str) -> None:

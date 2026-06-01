@@ -9,6 +9,8 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
+from .config import MAX_CHANGED_CONTENT, MAX_DIFF_CONTENT
+
 console = Console()
 
 _SEV_COLOR = {"HIGH": "bold red", "MED": "bold yellow", "LOW": "bold green"}
@@ -139,18 +141,25 @@ def print_scan_summary(related: dict) -> None:
 
 
 def print_diff_warnings(git_changes) -> None:
-    _DIFF_LIMIT = 3000
     for f in git_changes.files:
-        if f.diff and len(f.diff) > _DIFF_LIMIT:
-            seen = f.diff[:_DIFF_LIMIT].count("\n")
+        if f.diff and len(f.diff) > MAX_DIFF_CONTENT:
+            seen = f.diff[:MAX_DIFF_CONTENT].count("\n")
             total = f.diff.count("\n")
             console.print(
                 f"[yellow]⚠ {f.path}: diff bị cắt — AI chỉ thấy {seen}/{total} dòng thay đổi[/yellow]"
+            )
+        if f.content and len(f.content) > MAX_CHANGED_CONTENT:
+            console.print(
+                f"[yellow]⚠ {f.path}: nội dung file bị cắt — AI chỉ thấy {MAX_CHANGED_CONTENT:,}/{len(f.content):,} chars đầu[/yellow]"
             )
 
 
 def print_error(msg: str) -> None:
     console.print(f"[bold red]Error:[/bold red] {msg}")
+
+
+def print_warning(msg: str) -> None:
+    console.print(f"[yellow]⚠ {msg}[/yellow]")
 
 
 def print_info(msg: str) -> None:

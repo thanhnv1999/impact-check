@@ -2,19 +2,14 @@ import json
 
 from .providers.base import BaseProvider
 from . import debug
-
-MAX_CHANGED_CONTENT = 25000
-MAX_RELATED_CONTENT_IN_PROMPT = 25000
-MAX_RELATED_FILES = 12
-
-PROVIDER_LIMITS = {
-    "gemini": {"max_files": 20, "max_content": 40000, "safe_chars": 800000},
-    "claude": {"max_files": 12, "max_content": 25000, "safe_chars": 150000},
-    "gpt":    {"max_files": 10, "max_content": 20000, "safe_chars": 100000},
-    "grok":   {"max_files": 10, "max_content": 20000, "safe_chars": 100000},
-    "ollama": {"max_files":  5, "max_content":  8000, "safe_chars":  20000},
-}
-_DEFAULT_LIMITS = {"max_files": 12, "max_content": 25000, "safe_chars": 150000}
+from .config import (
+    MAX_CHANGED_CONTENT,
+    MAX_DIFF_CONTENT,
+    MAX_RELATED_CONTENT,
+    MAX_RELATED_FILES,
+    PROVIDER_LIMITS,
+    DEFAULT_PROVIDER_LIMITS,
+)
 
 
 def trim_to_provider_limits(related_files: dict, provider_name: str) -> tuple:
@@ -23,7 +18,7 @@ def trim_to_provider_limits(related_files: dict, provider_name: str) -> tuple:
     Ưu tiên giữ direct files, cắt indirect trước khi đạt max_files.
     Trả về (trimmed_dict, warnings_list).
     """
-    limits = PROVIDER_LIMITS.get(provider_name.lower(), _DEFAULT_LIMITS)
+    limits = PROVIDER_LIMITS.get(provider_name.lower(), DEFAULT_PROVIDER_LIMITS)
     max_files = limits["max_files"]
     max_content = limits["max_content"]
     warnings = []
@@ -52,24 +47,41 @@ def trim_to_provider_limits(related_files: dict, provider_name: str) -> tuple:
 
         result[changed_path] = trimmed_refs
 
-    # Cảnh báo nếu tổng content vẫn vượt ngưỡng an toàn
     total_chars = sum(len(r.get("content", "")) for refs in result.values() for r in refs)
     safe_chars  = limits["safe_chars"]
-    if total_chars > safe_chars:
-        est_tokens  = total_chars // 4
-        safe_tokens = safe_chars  // 4
-        warnings.append(
-            f"Ước tính ~{est_tokens:,} token vượt ngưỡng an toàn"
-            f" {safe_tokens:,} token — kết quả có thể bị ảnh hưởng"
-        )
+    safe_exceeded = total_chars > safe_chars
 
-    return result, warnings
+    return result, warnings, safe_exceeded
+
+
+def trim_to_safe_chars(related_files: dict, provider_name: str) -> dict:
+    """
+    Cắt tỉ lệ nội dung tất cả related files để tổng chars ≤ safe_chars.
+    Giữ nguyên số file, chỉ giảm độ dài content của từng file theo cùng tỉ lệ.
+    """
+    limits = PROVIDER_LIMITS.get(provider_name.lower(), DEFAULT_PROVIDER_LIMITS)
+    safe_chars = limits["safe_chars"]
+
+    total = sum(len(r.get("content", "")) for refs in related_files.values() for r in refs)
+    if total <= safe_chars:
+        return related_files
+
+    ratio = safe_chars / total
+    result = {}
+    for changed_path, refs in related_files.items():
+        trimmed = []
+        for ref in refs:
+            content = ref.get("content", "")
+            new_len = max(0, int(len(content) * ratio))
+            trimmed.append({**ref, "content": content[:new_len]})
+        result[changed_path] = trimmed
+    return result
 
 SYSTEM_PROMPT = """\
 Bạn là senior developer đang review code cho đồng nghiệp. Nhiệm vụ: đọc diff + các file liên quan, rồi trả lời thẳng vào vấn đề — chỗ nào bị ảnh hưởng, cần test gì, rủi ro ở đâu.
 
 == NGÔN NGỮ ==
-Viết tiếng Việt tự nhiên như dev nói chuyện, không dịch máy. 
+Viết tiếng Việt tự nhiên như dev nói chuyện, không dịch máy.
 
 Tên hàm, class, file, biến, feature, trang — LUÔN giữ nguyên tiếng Anh, KHÔNG dịch sang tiếng Việt.
   SAI: "trang giỏ hàng thường", "luồng thanh toán", "giỏ hàng quà tặng miễn phí"
@@ -117,6 +129,22 @@ Chỉ trả về JSON theo đúng cấu trúc dưới đây. Không kèm markdow
 }\
 """
 
+# Phiên bản rút gọn cho Ollama local — bỏ ví dụ SAI/ĐÚNG để tiết kiệm ~600 token prefill time
+SYSTEM_PROMPT_OLLAMA = """\
+You are a senior developer reviewing code changes. Analyze the diff and related files, then return ONLY a JSON object — no markdown, no text outside JSON.
+
+Rules:
+- Write analysis in Vietnamese. Keep all file names, function names, variables in English as-is.
+- affected_modules.reason: name the specific file and function that calls the changed code, explain why it breaks.
+- tests_needed.description: include (1) function/component, (2) specific input/scenario, (3) expected behavior.
+- risks.description: what goes wrong, under what condition, what the user sees.
+- risks.location format: "path/to/file → functionName()"
+- summary: 2-3 sentences for tech lead, use real file/function names.
+
+Return this exact JSON structure:
+{"affected_modules":[{"name":"","reason":"","severity":"HIGH|MED|LOW"}],"tests_needed":[{"type":"unit|integration|e2e|regression","description":"","priority":"HIGH|MED|LOW"}],"risks":[{"level":"HIGH|MED|LOW","description":"","location":""}],"summary":""}\
+"""
+
 
 def build_prompt(git_changes, related_files: dict, project_structure: str, test_files: list = None) -> str:
     return _build_prompt(git_changes, related_files, project_structure, test_files or [])
@@ -128,11 +156,13 @@ def analyze(
     project_structure: str,
     provider: BaseProvider,
     test_files: list = None,
+    provider_name: str = "",
 ) -> dict:
+    system = SYSTEM_PROMPT_OLLAMA if provider_name.lower() == "ollama" else SYSTEM_PROMPT
     prompt = _build_prompt(git_changes, related_files, project_structure, test_files or [])
-    debug.section("System prompt gửi đi", SYSTEM_PROMPT)
+    debug.section("System prompt gửi đi", system)
     debug.section("User prompt gửi đi", prompt)
-    raw = provider.complete(SYSTEM_PROMPT, prompt)
+    raw = provider.complete(system, prompt)
     return _parse_response(raw)
 
 
@@ -197,8 +227,8 @@ def _build_prompt(
         if f.diff:
             diff = (
                 f.diff
-                if len(f.diff) <= 3000
-                else f.diff[:3000] + "\n... (truncated)"
+                if len(f.diff) <= MAX_DIFF_CONTENT
+                else f.diff[:MAX_DIFF_CONTENT] + "\n... (truncated)"
             )
             parts.append(f"**Diff:**\n```diff\n{diff}\n```")
 
@@ -214,8 +244,8 @@ def _build_prompt(
                 parts.append(f"\n#### {ref['path']}{label}")
                 if ref.get("content"):
                     content = ref["content"]
-                    if len(content) > MAX_RELATED_CONTENT_IN_PROMPT:
-                        content = content[:MAX_RELATED_CONTENT_IN_PROMPT] + "\n... (truncated)"
+                    if len(content) > MAX_RELATED_CONTENT:
+                        content = content[:MAX_RELATED_CONTENT] + "\n... (truncated)"
                     parts.append(f"```\n{content}\n```")
 
     if test_files:
