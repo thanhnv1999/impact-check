@@ -7,6 +7,64 @@ MAX_CHANGED_CONTENT = 25000
 MAX_RELATED_CONTENT_IN_PROMPT = 25000
 MAX_RELATED_FILES = 12
 
+PROVIDER_LIMITS = {
+    "gemini": {"max_files": 20, "max_content": 40000, "safe_chars": 800000},
+    "claude": {"max_files": 12, "max_content": 25000, "safe_chars": 150000},
+    "gpt":    {"max_files": 10, "max_content": 20000, "safe_chars": 100000},
+    "grok":   {"max_files": 10, "max_content": 20000, "safe_chars": 100000},
+    "ollama": {"max_files":  5, "max_content":  8000, "safe_chars":  20000},
+}
+_DEFAULT_LIMITS = {"max_files": 12, "max_content": 25000, "safe_chars": 150000}
+
+
+def trim_to_provider_limits(related_files: dict, provider_name: str) -> tuple:
+    """
+    Trim related_files theo giới hạn của provider.
+    Ưu tiên giữ direct files, cắt indirect trước khi đạt max_files.
+    Trả về (trimmed_dict, warnings_list).
+    """
+    limits = PROVIDER_LIMITS.get(provider_name.lower(), _DEFAULT_LIMITS)
+    max_files = limits["max_files"]
+    max_content = limits["max_content"]
+    warnings = []
+    result = {}
+
+    for changed_path, refs in related_files.items():
+        direct   = [r for r in refs if not r.get("transitive")]
+        indirect = [r for r in refs if r.get("transitive")]
+
+        kept_direct   = direct[:max_files]
+        kept_indirect = indirect[:max(0, max_files - len(kept_direct))]
+
+        dropped = (len(direct) - len(kept_direct)) + (len(indirect) - len(kept_indirect))
+        if dropped > 0:
+            warnings.append(
+                f"Đã bỏ {dropped} file liên quan"
+                f" (giới hạn {provider_name.upper()}: tối đa {max_files} file)"
+            )
+
+        trimmed_refs = []
+        for ref in kept_direct + kept_indirect:
+            content = ref.get("content", "")
+            if len(content) > max_content:
+                content = content[:max_content]
+            trimmed_refs.append({**ref, "content": content})
+
+        result[changed_path] = trimmed_refs
+
+    # Cảnh báo nếu tổng content vẫn vượt ngưỡng an toàn
+    total_chars = sum(len(r.get("content", "")) for refs in result.values() for r in refs)
+    safe_chars  = limits["safe_chars"]
+    if total_chars > safe_chars:
+        est_tokens  = total_chars // 4
+        safe_tokens = safe_chars  // 4
+        warnings.append(
+            f"Ước tính ~{est_tokens:,} token vượt ngưỡng an toàn"
+            f" {safe_tokens:,} token — kết quả có thể bị ảnh hưởng"
+        )
+
+    return result, warnings
+
 SYSTEM_PROMPT = """\
 Bạn là senior developer đang review code cho đồng nghiệp. Nhiệm vụ: đọc diff + các file liên quan, rồi trả lời thẳng vào vấn đề — chỗ nào bị ảnh hưởng, cần test gì, rủi ro ở đâu.
 

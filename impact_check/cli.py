@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import sys
@@ -49,7 +50,15 @@ PROVIDER_NAMES = list(PROVIDERS.keys())
 )
 @click.option("--model", "-m", default=None, help="Override default model for the chosen provider")
 @click.option("--dry-run", is_flag=True, help="Chỉ thu thập dữ liệu và ghi log, không gọi AI")
-def main(ctx, root: str, provider: str, model: str, dry_run: bool):
+@click.option(
+    "--output", "-o",
+    default="table",
+    show_default=True,
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    help="Định dạng output: table (mặc định) hoặc json",
+)
+@click.option("--save-json", default=None, metavar="FILE", help="Lưu kết quả JSON ra file (vẫn hiển thị bảng)")
+def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, save_json: str):
     """AI-powered change impact analyzer.
 
     Supports multiple AI providers:
@@ -101,6 +110,14 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool):
         test_files = context_finder.find_test_files(changed_paths, root)
         structure = context_finder.get_project_structure(root)
 
+    reporter.print_scan_summary(related)
+    reporter.print_diff_warnings(changes)
+
+    # Trim context theo giới hạn provider — cảnh báo trước khi gọi AI
+    related, trim_warnings = analyzer.trim_to_provider_limits(related, provider)
+    for w in trim_warnings:
+        reporter.print_info(f"⚠ {w}")
+
     # Log dữ liệu tìm được
     debug.init()
     _log_scan_results(changes, related, test_files)
@@ -124,7 +141,15 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool):
             sys.exit(1)
 
     # 4. Print report
-    reporter.print_report(analysis, changes)
+    if output == "json":
+        print(json.dumps(analysis, ensure_ascii=False, indent=2))
+    else:
+        reporter.print_report(analysis, changes)
+
+    if save_json:
+        path = Path(save_json)
+        path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
+        reporter.print_info(f"Đã lưu JSON: {path.resolve()}")
 
 
 @main.command()

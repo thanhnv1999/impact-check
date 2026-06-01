@@ -57,6 +57,7 @@ def print_report(analysis: dict, git_changes) -> None:
     console.print(
         Panel.fit("[bold cyan]IMPACT ANALYSIS REPORT[/bold cyan]", border_style="cyan")
     )
+    console.print("[dim]  ⓘ  Đây là dự đoán AI — xác nhận lại trước khi bỏ qua cảnh báo HIGH[/dim]")
 
     summary = analysis.get("summary", "")
     if summary:
@@ -125,6 +126,27 @@ def _sort_by_severity(items: list, key: str) -> list:
         items,
         key=lambda x: _SEV_ORDER.index(x.get(key, "LOW")) if x.get(key, "LOW") in _SEV_ORDER else 9,
     )
+
+
+def print_scan_summary(related: dict) -> None:
+    direct = sum(1 for refs in related.values() for r in refs if not r.get("transitive"))
+    indirect = sum(1 for refs in related.values() for r in refs if r.get("transitive"))
+    total = direct + indirect
+    if total:
+        console.print(f"[dim]Tìm thấy {total} file liên quan (direct: {direct}, indirect: {indirect})[/dim]")
+    else:
+        console.print("[dim]Không tìm thấy file liên quan nào.[/dim]")
+
+
+def print_diff_warnings(git_changes) -> None:
+    _DIFF_LIMIT = 3000
+    for f in git_changes.files:
+        if f.diff and len(f.diff) > _DIFF_LIMIT:
+            seen = f.diff[:_DIFF_LIMIT].count("\n")
+            total = f.diff.count("\n")
+            console.print(
+                f"[yellow]⚠ {f.path}: diff bị cắt — AI chỉ thấy {seen}/{total} dòng thay đổi[/yellow]"
+            )
 
 
 def print_error(msg: str) -> None:

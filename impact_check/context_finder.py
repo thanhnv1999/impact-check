@@ -275,6 +275,15 @@ def _build_import_graph(project_root: str) -> dict:
                         if imp:
                             imports_found.add(imp)
 
+        # Python: `from . import X, Y, Z` — tên sau import là tên module, không phải symbol
+        # Regex trên chỉ capture "." → bị lstrip thành rỗng → cần xử lý riêng
+        if ext == ".py":
+            for m in re.finditer(r"^\s*from\s+\.\s+import\s+(.+)$", text, re.MULTILINE):
+                for part in m.group(1).split(","):
+                    name = part.strip().split()[0]  # bỏ alias "X as Y" → lấy "X"
+                    if name and name.isidentifier():
+                        imports_found.add(name)
+
         rel = os.path.relpath(fpath, project_root).replace("\\", "/")
         graph[rel] = {"content": text, "imports": imports_found}
 
