@@ -288,6 +288,25 @@ def get_project_structure(project_root: str = ".", max_depth: int = 3) -> str:
     return "\n".join(lines)
 
 
+def _resolve_py_relative_base(dots: str, current_rel: str):
+    """
+    Tính base package path từ relative import prefix.
+    dots:        ".." hoặc "..."
+    current_rel: "impact_check/providers/claude.py"
+    Trả về:      "impact_check" (str) hoặc None nếu vượt project root.
+
+    Công thức: N dấu chấm → lên (N-1) thư mục từ package của file hiện tại.
+      from ..utils  (2 dots) trong impact_check/providers/X.py → base = "impact_check"
+      from ...utils (3 dots) trong myapp/services/auth/X.py   → base = "myapp"
+    """
+    go_up = len(dots) - 1
+    dir_parts = list(Path(current_rel).parent.parts)
+    if go_up > len(dir_parts):
+        return None
+    base_parts = dir_parts[:-go_up] if go_up > 0 else dir_parts
+    return "/".join(base_parts)
+
+
 def _build_import_graph(project_root: str) -> dict:
     """
     Scan all project files once.
@@ -304,28 +323,49 @@ def _build_import_graph(project_root: str) -> dict:
         except Exception:
             continue
 
+        rel = os.path.relpath(fpath, project_root).replace("\\", "/")
         imports_found = set()
+
         for pattern in patterns:
             for m in re.finditer(pattern, text, re.MULTILINE):
                 for g in m.groups():
                     if g:
                         imp = g.replace("\\", "/")
-                        # Python relative import: "from .utils import" → ".utils" → "utils"
                         if ext == ".py":
-                            imp = imp.lstrip(".")
+                            if imp.startswith(".."):
+                                continue  # xử lý riêng bên dưới
+                            imp = imp.lstrip(".")  # single-level: .utils → utils
                         if imp:
                             imports_found.add(imp)
 
-        # Python: `from . import X, Y, Z` — tên sau import là tên module, không phải symbol
-        # Regex trên chỉ capture "." → bị lstrip thành rỗng → cần xử lý riêng
+        # Python relative imports — xử lý tách riêng để resolve đúng path
         if ext == ".py":
+            # Single-level: from . import X, Y
             for m in re.finditer(r"^\s*from\s+\.\s+import\s+(.+)$", text, re.MULTILINE):
                 for part in m.group(1).split(","):
                     name = part.strip().split()[0]  # bỏ alias "X as Y" → lấy "X"
                     if name and name.isidentifier():
                         imports_found.add(name)
 
-        rel = os.path.relpath(fpath, project_root).replace("\\", "/")
+            # Multi-level: from ..X import Y  hoặc  from .. import X, Y
+            for m in re.finditer(
+                r"^\s*from\s+(\.{2,})([\w.]*)\s+import\s+(.+)$", text, re.MULTILINE
+            ):
+                dots, module, names_str = m.group(1), m.group(2), m.group(3)
+                base = _resolve_py_relative_base(dots, rel)
+                if base is None:
+                    continue
+                if module:
+                    # from ..utils import X → "impact_check/utils"
+                    mod_path = module.replace(".", "/")
+                    imports_found.add(f"{base}/{mod_path}" if base else mod_path)
+                else:
+                    # from .. import config, helpers → "impact_check/config", "impact_check/helpers"
+                    for part in names_str.split(","):
+                        name = part.strip().split()[0]
+                        if name and name.isidentifier():
+                            imports_found.add(f"{base}/{name}" if base else name)
+
         graph[rel] = {"content": text, "imports": imports_found}
 
     return graph

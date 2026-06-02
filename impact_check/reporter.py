@@ -7,6 +7,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.tree import Tree
 from rich import box
 
 from .config import MAX_CHANGED_CONTENT, MAX_DIFF_CONTENT
@@ -14,7 +15,9 @@ from .config import MAX_CHANGED_CONTENT, MAX_DIFF_CONTENT
 console = Console()
 
 _SEV_COLOR = {"HIGH": "bold red", "MED": "bold yellow", "LOW": "bold green"}
+_SEV_ICON  = {"HIGH": "🔴", "MED": "🟡", "LOW": "🟢"}
 _SEV_ORDER = ["HIGH", "MED", "LOW"]
+_STATUS_STYLE = {"M": "yellow", "A": "green", "D": "red", "R": "cyan"}
 
 
 @contextmanager
@@ -52,6 +55,48 @@ def step(message: str):
     elapsed = time.time() - start
     mins, secs = divmod(int(elapsed), 60)
     console.print(f"[green]✓[/green] {message} [dim]({mins:02d}:{secs:02d})[/dim]")
+
+
+def print_risk_tree(analysis: dict, related: dict, changes) -> None:
+    def _norm(p: str) -> str:
+        return p.replace("\\", "/").lower()
+
+    sev_map = {
+        _norm(m.get("name", "")): m.get("severity", "LOW")
+        for m in analysis.get("affected_modules", [])
+    }
+
+    def _find_sev(path: str) -> str:
+        n = _norm(path)
+        if n in sev_map:
+            return sev_map[n]
+        for key, sev in sev_map.items():
+            if n.endswith(key) or key.endswith(n):
+                return sev
+        return "LOW"
+
+    console.print()
+    root = Tree("[bold cyan]🌳 Risk Heatmap[/bold cyan]", guide_style="dim cyan")
+
+    for f in changes.files:
+        style = _STATUS_STYLE.get(f.status, "white")
+        refs = related.get(f.path) or related.get(f.path.replace("\\", "/")) or []
+
+        file_node = root.add(f"[{style}][{f.status}][/{style}] [bold]{f.path}[/bold]")
+
+        if not refs:
+            file_node.add("[dim]no dependents found[/dim]")
+            continue
+
+        for ref in refs:
+            sev = _find_sev(ref["path"])
+            icon = _SEV_ICON.get(sev, "🟢")
+            color = _SEV_COLOR.get(sev, "bold green")
+            suffix = " [dim](indirect)[/dim]" if ref.get("transitive") else ""
+            file_node.add(f"{icon} [{color}]{sev:<4}[/{color}]  {ref['path']}{suffix}")
+
+    console.print(root)
+    console.print()
 
 
 def print_report(analysis: dict, git_changes) -> None:
@@ -140,18 +185,26 @@ def print_scan_summary(related: dict) -> None:
         console.print("[dim]Không tìm thấy file liên quan nào.[/dim]")
 
 
-def print_diff_warnings(git_changes) -> None:
+def collect_diff_warnings(git_changes) -> list:
+    """Trả về danh sách cảnh báo truncation cho changed files (dùng chung cho terminal và HTML)."""
+    warnings = []
     for f in git_changes.files:
         if f.diff and len(f.diff) > MAX_DIFF_CONTENT:
             seen = f.diff[:MAX_DIFF_CONTENT].count("\n")
             total = f.diff.count("\n")
-            console.print(
-                f"[yellow]⚠ {f.path}: diff bị cắt — AI chỉ thấy {seen}/{total} dòng thay đổi[/yellow]"
+            warnings.append(
+                f"{f.path}: diff bị cắt — AI chỉ thấy {seen}/{total} dòng thay đổi"
             )
         if f.content and len(f.content) > MAX_CHANGED_CONTENT:
-            console.print(
-                f"[yellow]⚠ {f.path}: nội dung file bị cắt — AI chỉ thấy {MAX_CHANGED_CONTENT:,}/{len(f.content):,} chars đầu[/yellow]"
+            warnings.append(
+                f"{f.path}: nội dung file bị cắt — AI chỉ thấy {MAX_CHANGED_CONTENT:,}/{len(f.content):,} chars đầu"
             )
+    return warnings
+
+
+def print_diff_warnings(git_changes) -> None:
+    for w in collect_diff_warnings(git_changes):
+        console.print(f"[yellow]⚠ {w}[/yellow]")
 
 
 def print_error(msg: str) -> None:

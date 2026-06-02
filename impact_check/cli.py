@@ -54,11 +54,12 @@ PROVIDER_NAMES = list(PROVIDERS.keys())
     "--output", "-o",
     default="table",
     show_default=True,
-    type=click.Choice(["table", "json"], case_sensitive=False),
-    help="Định dạng output: table (mặc định) hoặc json",
+    type=click.Choice(["table", "json", "tree"], case_sensitive=False),
+    help="Định dạng output: table (mặc định), json, hoặc tree (heatmap + bảng)",
 )
 @click.option("--save-json", default=None, metavar="FILE", help="Lưu kết quả JSON ra file (vẫn hiển thị bảng)")
-def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, save_json: str):
+@click.option("--save-html", default=None, metavar="FILE", help="Lưu báo cáo HTML ra file")
+def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, save_json: str, save_html: str):
     """AI-powered change impact analyzer.
 
     Supports multiple AI providers:
@@ -148,6 +149,9 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, 
     # 4. Print report
     if output == "json":
         print(json.dumps(analysis, ensure_ascii=False, indent=2))
+    elif output == "tree":
+        reporter.print_risk_tree(analysis, related, changes)
+        reporter.print_report(analysis, changes)
     else:
         reporter.print_report(analysis, changes)
 
@@ -155,6 +159,20 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, 
         path = Path(save_json)
         path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
         reporter.print_info(f"Đã lưu JSON: {path.resolve()}")
+
+    if save_html:
+        from . import html_reporter
+        all_warnings = (
+            reporter.collect_diff_warnings(changes)
+            + context_finder.get_scan_warnings(root)
+            + trim_warnings
+        )
+        path = Path(save_html)
+        path.write_text(
+            html_reporter.generate_html(analysis, changes, related, scan_warnings=all_warnings),
+            encoding="utf-8",
+        )
+        reporter.print_info(f"Đã lưu HTML: {path.resolve()}")
 
 
 @main.command()
