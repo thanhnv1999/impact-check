@@ -47,25 +47,47 @@ git add <file>
 impact-check
 ```
 
-Chọn provider:
+### Các flag
 
 ```bash
-impact-check                        # Claude (mặc định)
-impact-check -p gemini
-impact-check -p gpt
-impact-check -p grok
-impact-check -p ollama
-impact-check -p ollama -m mistral   # Chỉ định model
+impact-check -p gemini               # chọn provider: claude (mặc định), gemini, gpt, grok, ollama
+impact-check -p ollama -m mistral    # chỉ định model cụ thể
+impact-check -o tree                 # heatmap rủi ro dạng cây + bảng chi tiết
+impact-check -o json                 # output JSON thô
+impact-check --save-html report.html # lưu báo cáo HTML
+impact-check --save-json result.json # lưu kết quả JSON
+impact-check --dry-run               # thu thập dữ liệu, ghi log, không gọi AI
+impact-check install                 # cài pre-commit hook chạy AI analysis
+impact-check install --guard         # cài pre-commit hook quét API key/secret — local, < 1 giây, không cần AI
+impact-check guard                   # chạy secret scanner thủ công (không cần hook)
 ```
 
-Kiểm tra dữ liệu trước khi gọi AI:
+Các flag có thể kết hợp tự do:
 
 ```bash
-impact-check --dry-run              # Ghi log, không gọi AI
+impact-check -p gemini -o tree --save-html report.html
 ```
 
-Cài pre-commit hook (tự động chạy khi `git commit`):
+---
+
+## Secret Guard
+
+`impact-check install --guard` cài hook quét staged files trước mỗi `git commit` — không cần network, không cần AI.
+
+**Phát hiện:** Anthropic / OpenAI / Gemini / Grok / AWS / GitHub / Stripe / Slack key, private key, hardcoded password/secret.
+
+**Hành vi:**
+- `HIGH` (key thật) → block commit
+- `MED` (password/token generic) → cảnh báo, commit vẫn tiếp tục
+
+Để bỏ qua một dòng cụ thể:
+
+```python
+EXAMPLE_KEY = "sk-ant-EXAMPLE..."  # noguard
+```
+
+Chạy thủ công (không cần hook):
 
 ```bash
-impact-check install
+impact-check guard
 ```

@@ -249,14 +249,11 @@ main() ──→ _load_dotenv() + GeminiProvider.__init__()
 
 ## Q6 — Giải thích chi tiết các config giới hạn
 
-**Q1: `MAX_RELATED_CONTENT` và `MAX_RELATED_CONTENT_IN_PROMPT` khác nhau thế nào?**
+**Q1: `MAX_RELATED_CONTENT` kiểm soát điều gì?**
 
-Hai biến kiểm soát 2 điểm cắt khác nhau:
+`MAX_RELATED_CONTENT = 25000` (chars) — giới hạn content của mỗi related file khi đưa vào result dict trong `context_finder.find_related_files()`.
 
-- `context_finder.py`: `MAX_RELATED_CONTENT = 25000` — giới hạn content lưu trong graph (dùng khi đưa vào result dict)
-- `analyzer.py`: `MAX_RELATED_CONTENT_IN_PROMPT = 25000` — giới hạn content khi ghép vào prompt gửi AI
-
-Hiện tại cả hai đều là 25000 nên hiệu quả bằng nhau — không bị cắt thêm ở bước nào. Nếu muốn lưu graph đầy đủ hơn nhưng gửi AI ít hơn thì có thể tăng `MAX_RELATED_CONTENT` và giảm `MAX_RELATED_CONTENT_IN_PROMPT`.
+Sau đó `trim_to_provider_limits()` trong `analyzer.py` có thể cắt thêm xuống `max_content` của provider (Gemini=40000, Claude=25000, Ollama=3000). File bị cắt ở bất kỳ bước nào đều được đánh dấu `content_truncated=True` và nhận marker `... (truncated)` trong prompt gửi AI.
 
 ---
 
@@ -287,12 +284,13 @@ Thực tế `node_modules`, `__pycache__`, `dist`... đã bị skip bởi `SKIP_
 
 ---
 
-**Q4: `diff = 3000` là ký tự hay từ khóa?**
+**Q4: `MAX_DIFF_CONTENT` là ký tự hay từ khóa? Giá trị hiện tại bao nhiêu?**
 
 **Ký tự** — Python `len(string)` đếm từng ký tự một, kể cả dấu cách và xuống dòng.
 
 ```python
-f.diff[:3000]  # lấy 3000 ký tự đầu tiên của chuỗi diff
+# config.py — giá trị hiện tại
+MAX_DIFF_CONTENT = 20000  # ~570 dòng diff ≈ 200 dòng code thực sự thay đổi
 ```
 
 Diff là phần ghi lại những dòng thay đổi trong git:
@@ -301,4 +299,4 @@ Diff là phần ghi lại những dòng thay đổi trong git:
 + new_function(a, b, c):  ← dòng được thêm
 ```
 
-3000 ký tự ≈ 60–80 dòng code. Commit nhỏ thì đủ, commit lớn (refactor, thêm feature) thì bị cắt giữa chừng — AI không thấy hết phần thay đổi.
+20.000 ký tự đủ cho hầu hết commit thực tế. Khi bị cắt, AI nhận được marker `... (truncated)` để biết diff còn tiếp.
