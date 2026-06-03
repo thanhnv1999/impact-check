@@ -177,7 +177,9 @@ def main(ctx, root: str, provider: str, model: str, dry_run: bool, output: str, 
 
 @main.command()
 @click.argument("repo_path", default=".")
-def install(repo_path: str):
+@click.option("--guard", "use_guard", is_flag=True,
+              help="Cài hook quét secret/API key thay vì AI analysis")
+def install(repo_path: str, use_guard: bool):
     """Install impact-check as a pre-commit hook in REPO_PATH."""
     git_dir = os.path.join(repo_path, ".git")
     if not os.path.isdir(git_dir):
@@ -185,14 +187,37 @@ def install(repo_path: str):
         sys.exit(1)
 
     hook_path = os.path.join(git_dir, "hooks", "pre-commit")
-    hook_script = "#!/bin/sh\nimpact-check\nexit $?\n"
+    if use_guard:
+        hook_script = (
+            "#!/bin/sh\n"
+            "if ! command -v impact-check >/dev/null 2>&1; then\n"
+            "    echo 'impact-check chua duoc cai -- bo qua guard'\n"
+            "    exit 0\n"
+            "fi\n"
+            "impact-check guard\n"
+            "exit $?\n"
+        )
+    else:
+        hook_script = "#!/bin/sh\nimpact-check\nexit $?\n"
 
     with open(hook_path, "w", newline="\n") as fh:
         fh.write(hook_script)
 
     current = os.stat(hook_path).st_mode
     os.chmod(hook_path, current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    reporter.print_info(f"Pre-commit hook installed: {hook_path}")
+
+    if use_guard:
+        reporter.print_info(f"Guard hook installed: {hook_path}")
+        reporter.print_info("Sẽ quét API key và secret trước mỗi git commit.")
+    else:
+        reporter.print_info(f"Pre-commit hook installed: {hook_path}")
+
+
+@main.command(name="guard")
+def guard_cmd():
+    """Quét staged files tìm API key, password, secret bị hardcode."""
+    from . import guard as _guard
+    sys.exit(_guard.run_guard())
 
 
 def _log_scan_results(changes, related: dict, test_files: list) -> None:

@@ -41,9 +41,14 @@ def trim_to_provider_limits(related_files: dict, provider_name: str) -> tuple:
         trimmed_refs = []
         for ref in kept_direct + kept_indirect:
             content = ref.get("content", "")
-            if len(content) > max_content:
+            was_cut = len(content) > max_content
+            if was_cut:
                 content = content[:max_content]
-            trimmed_refs.append({**ref, "content": content})
+            trimmed_refs.append({
+                **ref,
+                "content": content,
+                "content_truncated": ref.get("content_truncated", False) or was_cut,
+            })
 
         result[changed_path] = trimmed_refs
 
@@ -73,7 +78,12 @@ def trim_to_safe_chars(related_files: dict, provider_name: str) -> dict:
         for ref in refs:
             content = ref.get("content", "")
             new_len = max(0, int(len(content) * ratio))
-            trimmed.append({**ref, "content": content[:new_len]})
+            was_cut = new_len < len(content)
+            trimmed.append({
+                **ref,
+                "content": content[:new_len],
+                "content_truncated": ref.get("content_truncated", False) or was_cut,
+            })
         result[changed_path] = trimmed
     return result
 
@@ -293,8 +303,8 @@ def _build_prompt(
                 parts.append(f"\n#### {ref['path']}{label}")
                 if ref.get("content"):
                     content = ref["content"]
-                    if len(content) > MAX_RELATED_CONTENT:
-                        content = content[:MAX_RELATED_CONTENT] + "\n... (truncated)"
+                    if ref.get("content_truncated"):
+                        content += "\n... (truncated)"
                     parts.append(f"```\n{content}\n```")
 
     if test_files:

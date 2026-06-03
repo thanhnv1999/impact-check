@@ -4,7 +4,7 @@ MAX_FILE_SIZE     = 200 * 1024  # bỏ qua file > 200 KB
 
 # ── Giới hạn nội dung gửi lên AI ─────────────────────────────────────────────
 MAX_CHANGED_CONTENT  = 25000   # chars tối đa của 1 file đang thay đổi
-MAX_DIFF_CONTENT     = 5000    # chars tối đa của git diff 1 file
+MAX_DIFF_CONTENT     = 20000   # chars tối đa của git diff 1 file (~570 dòng diff)
 MAX_RELATED_FILES    = 12      # số file liên quan tối đa per changed file
 MAX_RELATED_CONTENT  = 25000   # chars tối đa nội dung 1 file liên quan
 MAX_TEST_FILES       = 5       # số test file tối đa
